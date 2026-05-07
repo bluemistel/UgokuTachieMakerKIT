@@ -119,7 +119,7 @@ function App() {
       const file = files[0];
       let filePath = file.path;
       if (!filePath && webUtils?.getPathForFile) { try { filePath = webUtils.getPathForFile(file); } catch { } }
-      if (filePath && filePath.toLowerCase().endsWith('.psd')) loadPsd(filePath);
+      if (filePath && (filePath.toLowerCase().endsWith('.psd') || filePath.toLowerCase().endsWith('.psb'))) loadPsd(filePath);
     }
   };
 
