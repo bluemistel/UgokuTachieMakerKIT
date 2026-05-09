@@ -1,1 +1,41 @@
-"use strict";const{app:e,BrowserWindow:o,Menu:a}=require("electron"),t=require("path");function s(){const i=!e.isPackaged;i||a.setApplicationMenu(null);const n=new o({width:1200,height:800,title:"ウゴメキ",icon:t.join(__dirname,"../public/icon.png"),autoHideMenuBar:!i,webPreferences:{nodeIntegration:!0,contextIsolation:!1}});i||(n.setMenuBarVisibility(!1),n.removeMenu()),i&&process.env.VITE_DEV_SERVER_URL?n.loadURL(process.env.VITE_DEV_SERVER_URL):n.loadFile(t.join(__dirname,"../dist/index.html"))}e.whenReady().then(s);e.on("window-all-closed",()=>{process.platform!=="darwin"&&e.quit()});e.on("activate",()=>{o.getAllWindows().length===0&&s()});
+"use strict";
+const { app, BrowserWindow, Menu } = require("electron");
+const path = require("path");
+function createWindow() {
+  const isDev = !app.isPackaged;
+  if (!isDev) {
+    Menu.setApplicationMenu(null);
+  }
+  const win = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    title: "ウゴメキ",
+    icon: path.join(__dirname, "../public/icon.png"),
+    // Altキーでも出ない
+    autoHideMenuBar: !isDev,
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false
+    }
+  });
+  if (!isDev) {
+    win.setMenuBarVisibility(false);
+    win.removeMenu();
+  }
+  if (isDev && process.env.VITE_DEV_SERVER_URL) {
+    win.loadURL(process.env.VITE_DEV_SERVER_URL);
+  } else {
+    win.loadFile(path.join(__dirname, "../dist/index.html"));
+  }
+}
+app.whenReady().then(createWindow);
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") {
+    app.quit();
+  }
+});
+app.on("activate", () => {
+  if (BrowserWindow.getAllWindows().length === 0) {
+    createWindow();
+  }
+});

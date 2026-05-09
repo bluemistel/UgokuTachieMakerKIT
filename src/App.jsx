@@ -9,7 +9,7 @@ const { webUtils } = window.require ? window.require('electron') : {};
 // Back-to-Front rendering order
 const RENDER_ORDER = ['後', '体', '顔色', '口', '目', '眉', '髪', '他'];
 const SLOT_COUNT = 3;
-const CURRENT_VERSION = '1.0.4';
+const CURRENT_VERSION = '1.0.7';
 const BOOTH_URL = 'https://bluemist.booth.pm/items/8064115';
 const NOTION_FORM_URL = 'https://ionian-gallimimus-e47.notion.site/32b8c5bf8aa481978f37e470a25e1e01';
 
@@ -53,6 +53,7 @@ function App() {
   const [previewComposite, setPreviewComposite] = useState(null); // { category, variantIdx } for click-preview
   const [isProcessing, setIsProcessing] = useState(false);
   const canvasRef = useRef(null);
+  const wrapperRef = useRef(null);
   const nodeMapRef = useRef(new Map());
   const [outputPath, setOutputPath] = useState('');
   const [showExportModal, setShowExportModal] = useState(false);
@@ -68,6 +69,13 @@ function App() {
   const [latestVersion, setLatestVersion] = useState(null);
   const isResizingSidebar = useRef(false);
   const isResizingMapping = useRef(false);
+
+  // Zoom & Pan state
+  const [zoom, setZoom] = useState(1);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+  const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
+  const [hasMovedDuringClick, setHasMovedDuringClick] = useState(false);
 
   const sanitizeFilename = (name) => name.replace(/:/g, '：').replace(/\*/g, '＊').replace(/[\\/?"<>|!]/g, '').trim();
 
@@ -182,6 +190,25 @@ function App() {
       setTreeVisibility(initVisibility);
       setSelectedPaths(new Set());
       setPreviewComposite(null);
+      setZoom(1);
+      setOffset({ x: 0, y: 0 });
+
+      // Calculate initial fit zoom
+      setTimeout(() => {
+        if (wrapperRef.current && psd.width && psd.height) {
+          const wr = wrapperRef.current.getBoundingClientRect();
+          const margin = 40;
+          const availableW = wr.width - margin;
+          const availableH = wr.height - margin;
+          const fitZoom = Math.min(availableW / psd.width, availableH / psd.height, 1);
+          setZoom(fitZoom);
+          // Center it
+          setOffset({
+            x: (wr.width - psd.width * fitZoom) / 2,
+            y: (wr.height - psd.height * fitZoom) / 2
+          });
+        }
+      }, 100);
 
       const configPath = `${filePath}.config.json`;
       if (await fs.pathExists(configPath)) {
@@ -649,6 +676,100 @@ function App() {
     );
   };
 
+  const handleWheel = (e) => {
+    if (!psdData) return;
+    // We'll use a native listener to prevent default if possible, 
+    // but for now let's just make sure we use the right logic.
+    const delta = -e.deltaY;
+    const zoomSpeed = 0.001;
+    const factor = Math.pow(1.1, delta / 100);
+    const newZoom = Math.min(Math.max(zoom * factor, 0.1), 20);
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    const zoomRatio = newZoom / zoom;
+    setOffset({
+      x: x - (x - offset.x) * zoomRatio,
+      y: y - (y - offset.y) * zoomRatio
+    });
+    setZoom(newZoom);
+  };
+
+  const handleZoomBtn = (direction) => {
+    if (!psdData || !wrapperRef.current) return;
+    const factor = direction === 'in' ? 1.2 : 1 / 1.2;
+    const newZoom = Math.min(Math.max(zoom * factor, 0.1), 20);
+    const wr = wrapperRef.current.getBoundingClientRect();
+    
+    // Zoom from center of the wrapper
+    const centerX = wr.width / 2;
+    const centerY = wr.height / 2;
+
+    const zoomRatio = newZoom / zoom;
+    setOffset({
+      x: centerX - (centerX - offset.x) * zoomRatio,
+      y: centerY - (centerY - offset.y) * zoomRatio
+    });
+    setZoom(newZoom);
+  };
+
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+    const preventDefault = (e) => { if (psdData) e.preventDefault(); };
+    wrapper.addEventListener('wheel', preventDefault, { passive: false });
+    return () => wrapper.removeEventListener('wheel', preventDefault);
+  }, [psdData]);
+
+  const handleResetZoom = () => {
+    if (!psdData || !wrapperRef.current) return;
+    const wr = wrapperRef.current.getBoundingClientRect();
+    const margin = 40;
+    const availableW = wr.width - margin;
+    const availableH = wr.height - margin;
+    const fitZoom = Math.min(availableW / psdData.width, availableH / psdData.height, 1);
+    setZoom(fitZoom);
+    setOffset({
+      x: (wr.width - psdData.width * fitZoom) / 2,
+      y: (wr.height - psdData.height * fitZoom) / 2
+    });
+  };
+
+  const handleMouseDown = (e) => {
+    if (!psdData) return;
+    // Panning with middle click or left click + Space (simulated by just left click for now as it's simpler)
+    // Actually, let's use middle click or right click for panning to avoid conflict with selection
+    // Or just left click if we don't have other interactions on the canvas.
+    // The user wants click to exit combination mode, so let's use left click drag for pan but track movement.
+    setIsPanning(true);
+    setLastMousePos({ x: e.clientX, y: e.clientY });
+    setHasMovedDuringClick(false);
+  };
+
+  const handleMouseMove = (e) => {
+    if (!isPanning) return;
+    const dx = e.clientX - lastMousePos.x;
+    const dy = e.clientY - lastMousePos.y;
+    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+      setHasMovedDuringClick(true);
+    }
+    setOffset(prev => ({ x: prev.x + dx, y: prev.y + dy }));
+    setLastMousePos({ x: e.clientX, y: e.clientY });
+  };
+
+  const handleMouseUp = () => {
+    setIsPanning(false);
+  };
+
+  const handleCanvasClick = (e) => {
+    if (hasMovedDuringClick) return; // Ignore if it was a drag
+    if (previewComposite) {
+      setPreviewComposite(null);
+    }
+  };
+
   return (
     <div className="app-container main-layout">
       <header className="header glass">
@@ -709,12 +830,44 @@ function App() {
         <div className="resizer-h" onMouseDown={() => { isResizingSidebar.current = true; document.body.style.cursor = 'col-resize'; }} />
 
         <main className="preview-center" style={{ flex: 1 }}>
-          <div className="canvas-wrapper glass" onDragOver={e => e.preventDefault()} onDrop={handleDrop}>
-            {!psdData ? <div className="drop-zone"><p>ここにPSDファイルをドラッグ＆ドロップ</p></div> : <canvas ref={canvasRef} />}
+          <div 
+            className="canvas-wrapper glass" 
+            ref={wrapperRef}
+            onDragOver={e => e.preventDefault()} 
+            onDrop={handleDrop}
+            onWheel={handleWheel}
+            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+            onMouseLeave={handleMouseUp}
+            onClick={handleCanvasClick}
+            onDoubleClick={handleResetZoom}
+            style={{ cursor: isPanning ? 'grabbing' : (psdData ? 'crosshair' : 'default') }}
+          >
+            {!psdData ? (
+              <div className="drop-zone"><p>ここにPSDファイルをドラッグ＆ドロップ</p></div>
+            ) : (
+              <div className="zoom-container" style={{ 
+                transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})`,
+                transformOrigin: '0 0',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}>
+                <canvas ref={canvasRef} />
+              </div>
+            )}
+            {psdData && (
+              <div className="zoom-controls glass" onClick={(e) => e.stopPropagation()}>
+                <button onClick={() => handleZoomBtn('out')} title="縮小">-</button>
+                <span className="zoom-percentage" onClick={handleResetZoom} title="全体表示リセット">{Math.round(zoom * 100)}%</span>
+                <button onClick={() => handleZoomBtn('in')} title="拡大">+</button>
+              </div>
+            )}
             {viewMode === 'mapping' && previewComposite && (
               <div className="selection-label composite-preview-badge">
                 📦 結合プレビュー: {mappingData[previewComposite.category]?.composites[previewComposite.variantIdx]?.name}
-                <button onClick={() => setPreviewComposite(null)} style={{ marginLeft: 8, background: 'none', border: 'none', color: '#fff', cursor: 'pointer' }}>✕</button>
+                <button onClick={(e) => { e.stopPropagation(); setPreviewComposite(null); }} style={{ marginLeft: 8, background: 'none', border: 'none', color: '#fff', cursor: 'pointer' }}>✕</button>
               </div>
             )}
             {viewMode === 'mapping' && !previewComposite && selectedPaths.size > 0 && <div className="selection-label">選択中: {selectedPaths.size} アイテム</div>}
