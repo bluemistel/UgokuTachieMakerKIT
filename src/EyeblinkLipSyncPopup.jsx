@@ -91,6 +91,7 @@ export default function EyeblinkLipSyncPopup({ onClose }) {
     const [closedImage, setClosedImage] = useState(null);
     const [intermediateImages, setIntermediateImages] = useState([]);
     const [vowelImages, setVowelImages] = useState({ a: null, i: null, u: null, e: null, o: null });
+    const [reorderDragIndex, setReorderDragIndex] = useState(null); // 中間フレーム並び替え中の元インデックス
 
     const previewIntervalRef = useRef(null);
     const containerRef = useRef(null);
@@ -167,7 +168,8 @@ export default function EyeblinkLipSyncPopup({ onClose }) {
         } else {
             if (intermediateImages.length > 0 || closedImage) {
                 const paths = [baseImage.fullPath];
-                intermediateImages.forEach(img => { if (img) paths.push(img.fullPath); });
+                const reversed = [...intermediateImages].reverse();
+                reversed.forEach(img => { if (img) paths.push(img.fullPath); });
                 if (closedImage) paths.push(closedImage.fullPath);
                 return paths;
             }
@@ -184,15 +186,17 @@ export default function EyeblinkLipSyncPopup({ onClose }) {
                 if (matched) paths.push(matched.fullPath);
             });
         } else {
+            const diskIntermediates = [];
             let i = 1;
             while (true) {
                 const iPath = path.join(currentFolder, `${basename}.${i}.png`);
                 const found = allImages.find(x => x.fullPath === iPath);
                 if (found) {
-                    paths.push(found.fullPath);
+                    diskIntermediates.push(found.fullPath);
                     i++;
                 } else { break; }
             }
+            paths.push(...diskIntermediates.reverse());
         }
 
         const closedPath = path.join(currentFolder, `${basename}.0.png`);
@@ -329,15 +333,52 @@ export default function EyeblinkLipSyncPopup({ onClose }) {
 
     const handleDropToIntermediate = (e, targetIndex) => {
         e.preventDefault();
+
+        // 中間フレーム同士のドラッグによる並び替え
+        const reorderStr = e.dataTransfer.getData('intermediateReorder');
+        if (reorderStr !== '') {
+            const fromIndex = parseInt(reorderStr, 10);
+            setReorderDragIndex(null);
+            if (Number.isNaN(fromIndex)) return;
+            setIntermediateImages(prev => {
+                // 新規追加スロット（末尾＝UI最下部）へは配列先頭へ移動する
+                let toIndex = targetIndex === prev.length ? 0 : targetIndex;
+                if (fromIndex === toIndex) return prev;
+                const next = [...prev];
+                const [moved] = next.splice(fromIndex, 1);
+                // 取り除いた分だけ挿入位置がずれるので補正
+                if (fromIndex < toIndex) toIndex -= 1;
+                next.splice(toIndex, 0, moved);
+                return next;
+            });
+            return;
+        }
+
         const str = e.dataTransfer.getData('gridImage');
         if (str) {
             const img = JSON.parse(str);
             setIntermediateImages(prev => {
+                if (targetIndex === prev.length) {
+                    // 新規追加スロット（UI上は一番下＝閉じの直前）へのドロップ時は、
+                    // 配列の先頭に追加することで、UIの下部に正しく配置されるようにする
+                    return [img, ...prev];
+                }
+                // 既存スロットへの上書きドロップ
                 const next = [...prev];
                 next[targetIndex] = img;
                 return next;
             });
         }
+    };
+
+    const handleReorderDragStart = (e, index) => {
+        e.dataTransfer.setData('intermediateReorder', String(index));
+        e.dataTransfer.effectAllowed = 'move';
+        setReorderDragIndex(index);
+    };
+
+    const handleReorderDragEnd = () => {
+        setReorderDragIndex(null);
     };
 
     const saveSettings = async () => {
@@ -497,28 +538,40 @@ export default function EyeblinkLipSyncPopup({ onClose }) {
                                         ) : (
                                             <>
                                                 {/* 中間フレーム */}
-                                                {intermediateImages.map((img, i) => (
-                                                    <div key={`param-${i}`} className="setting-slot drop-zone" onDragOver={handleDragOver} onDrop={(e) => handleDropToIntermediate(e, i)} style={{ width: '100%', height: '110px', flex: 'none' }}>
-                                                        <span className="slot-title">中間フレーム {i + 1}</span>
-                                                        {img ? (
-                                                            <>
-                                                                <div style={{ height: '60px', display: 'flex', alignItems: 'center' }}>
-                                                                    <TrimmedImage filePath={img.fullPath} alt="intermediate" />
-                                                                </div>
-                                                                <span className="slot-name">{img.name}</span>
-                                                                <button className="btn-icon delete remove-slot" onClick={() => {
-                                                                    setIntermediateImages(prev => {
-                                                                        const next = [...prev];
-                                                                        next.splice(i, 1);
-                                                                        return next;
-                                                                    });
-                                                                }}>×</button>
-                                                            </>
-                                                        ) : (
-                                                            <p style={{ fontSize: '0.7rem' }}>素材をドロップ</p>
-                                                        )}
-                                                    </div>
-                                                ))}
+                                                {intermediateImages.slice().reverse().map((img, revIndex) => {
+                                                    const i = intermediateImages.length - 1 - revIndex;
+                                                    return (
+                                                        <div
+                                                            key={`param-${i}`}
+                                                            className="setting-slot drop-zone"
+                                                            draggable={!!img}
+                                                            onDragStart={img ? (e) => handleReorderDragStart(e, i) : undefined}
+                                                            onDragEnd={handleReorderDragEnd}
+                                                            onDragOver={handleDragOver}
+                                                            onDrop={(e) => handleDropToIntermediate(e, i)}
+                                                            style={{ width: '100%', height: '110px', flex: 'none', cursor: img ? 'grab' : undefined, opacity: reorderDragIndex === i ? 0.4 : 1 }}
+                                                        >
+                                                            <span className="slot-title">中間フレーム {i + 1}</span>
+                                                            {img ? (
+                                                                <>
+                                                                    <div style={{ height: '60px', display: 'flex', alignItems: 'center' }}>
+                                                                        <TrimmedImage filePath={img.fullPath} alt="intermediate" />
+                                                                    </div>
+                                                                    <span className="slot-name">{img.name}</span>
+                                                                    <button className="btn-icon delete remove-slot" onClick={() => {
+                                                                        setIntermediateImages(prev => {
+                                                                            const next = [...prev];
+                                                                            next.splice(i, 1);
+                                                                            return next;
+                                                                        });
+                                                                    }}>×</button>
+                                                                </>
+                                                            ) : (
+                                                                <p style={{ fontSize: '0.7rem' }}>素材をドロップ</p>
+                                                            )}
+                                                        </div>
+                                                    );
+                                                })}
 
                                                 {/* 次の中間フレーム用空スロット */}
                                                 <div className="setting-slot drop-zone empty" onDragOver={handleDragOver} onDrop={(e) => handleDropToIntermediate(e, intermediateImages.length)} style={{ width: '100%', height: '50px', flex: 'none' }}>

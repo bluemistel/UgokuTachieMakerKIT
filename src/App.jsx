@@ -9,7 +9,7 @@ const { webUtils } = window.require ? window.require('electron') : {};
 // Back-to-Front rendering order
 const RENDER_ORDER = ['後', '体', '顔色', '口', '目', '眉', '髪', '他'];
 const SLOT_COUNT = 3;
-const CURRENT_VERSION = '1.0.7';
+const CURRENT_VERSION = '1.0.9';
 const BOOTH_URL = 'https://bluemist.booth.pm/items/8064115';
 const NOTION_FORM_URL = 'https://ionian-gallimimus-e47.notion.site/32b8c5bf8aa481978f37e470a25e1e01';
 
