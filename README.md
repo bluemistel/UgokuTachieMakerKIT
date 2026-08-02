@@ -32,4 +32,34 @@ PSD/PSBファイルをゆっくりMovieMaker4 (YMM4) の動く立ち絵形式に
 
 ## ライセンス
 
-MIT License
+本ソフトウェアのソースコードは [MIT License](LICENSE) で提供されています。
+
+```
+Copyright (c) 2026 bluemistel
+```
+
+### アイコン・ロゴについて
+
+`public/icon.png` を含むアプリのアイコンおよびロゴは作者の制作物であり、**MIT License の対象外**です。本ソフトウェアの配布物に同梱された状態での再配布は自由に行えますが、アイコン・ロゴ単体での転用、改変、他の製品やサービスでの使用は許可していません。
+
+フォークや二次配布を行う場合は、アイコン・ロゴを独自のものに差し替えてください。
+
+### 書き出した素材について
+
+本アプリで書き出した画像の権利は、入力した PSD/PSB ファイルの権利者に帰属します。本ライセンスは書き出し結果には影響しません。素材の利用条件は、元素材の配布元の規約に従ってください。
+
+### 同梱しているサードパーティ製ソフトウェア
+
+リリースバイナリ（`ウゴメキ x.x.x.exe`）には以下が含まれます。いずれも MIT License です。
+
+| ソフトウェア | ライセンス |
+| --- | --- |
+| [Electron](https://github.com/electron/electron) | MIT |
+| [React](https://github.com/facebook/react) / React DOM | MIT |
+| [ag-psd](https://github.com/Agamnentzar/ag-psd) | MIT |
+| [node-canvas](https://github.com/Automattic/node-canvas) | MIT |
+| [fs-extra](https://github.com/jprichardson/node-fs-extra) | MIT |
+
+Electron を通じて Chromium および Node.js が含まれます。これらは BSD-3-Clause をはじめとする各プロジェクトのライセンスに従います。詳細は Electron の [LICENSE](https://github.com/electron/electron/blob/main/LICENSE) および同梱の `LICENSES.chromium.html` をご確認ください。
+
+Web フォントは同梱していません（システムフォントを参照しています）。

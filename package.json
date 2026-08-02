@@ -6,6 +6,7 @@
   "version": "1.0.10",
   "type": "commonjs",
   "author": "あおもや",
+  "license": "MIT",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "set \"ELECTRON_RUN_AS_NODE=\" && vite",
