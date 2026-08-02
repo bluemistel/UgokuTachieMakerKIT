@@ -9,7 +9,7 @@ const { webUtils } = window.require ? window.require('electron') : {};
 // Back-to-Front rendering order
 const RENDER_ORDER = ['後', '体', '顔色', '口', '目', '眉', '髪', '他'];
 const SLOT_COUNT = 3;
-const CURRENT_VERSION = '1.0.9';
+const CURRENT_VERSION = '1.0.10';
 const BOOTH_URL = 'https://bluemist.booth.pm/items/8064115';
 const NOTION_FORM_URL = 'https://ionian-gallimimus-e47.notion.site/32b8c5bf8aa481978f37e470a25e1e01';
 
@@ -145,15 +145,20 @@ function App() {
       setExportWidth(psd.width);
       setExportHeight(psd.height);
 
-      const buildTree = (children, parentPath = '', inForcedTree = false) => [...children].reverse().map(child => {
+      const buildTree = (children, parentPath = '', inForcedTree = false, ancestorNodes = []) => [...children].reverse().map(child => {
         const { displayName, isForced, isRadio, flipType } = parseLayerName(child.name);
         child.flipType = flipType; // store for drawing logic
+        // 親グループのノードを引き継ぐ。
+        // レイヤーを単体で描画する際（マッピング済みパーツなど）に、
+        // 親フォルダーのマスク・不透明度・合成モードが失われないようにするため。
+        child.ancestorNodes = ancestorNodes;
+        const childAncestorNodes = child.children ? [...ancestorNodes, child] : ancestorNodes;
         const currentPath = parentPath ? `${parentPath}/${child.name}` : child.name;
         const childInForcedTree = inForcedTree || isForced;
         return {
           id: currentPath, rawName: child.name, name: displayName, fullPath: currentPath,
           isFolder: !!child.children, isForced, inForcedTree: childInForcedTree, isRadio, flipType,
-          node: child, children: child.children ? buildTree(child.children, currentPath, childInForcedTree) : null
+          node: child, children: child.children ? buildTree(child.children, currentPath, childInForcedTree, childAncestorNodes) : null
         };
       });
 
@@ -423,22 +428,42 @@ function App() {
     ctx.restore();
   };
 
-  const applyMaskToCanvas = (canvas, mask, scale, flip, canvasWidth, canvasHeight) => {
+  // PSDのマスクはグレースケール（RGBに輝度、アルファは255）で格納されているため、
+  // そのままでは合成演算(destination-in)で使えない。輝度をアルファへ変換した
+  // キャンバスを作り、マスクごとにキャッシュする。
+  const getMaskAlphaCanvas = (mask) => {
+    if (mask._alphaCanvas) return mask._alphaCanvas;
+    const src = mask.canvas;
+    const tmp = document.createElement('canvas');
+    tmp.width = src.width;
+    tmp.height = src.height;
+    const tctx = tmp.getContext('2d');
+    tctx.drawImage(src, 0, 0);
+    const data = tctx.getImageData(0, 0, tmp.width, tmp.height);
+    const d = data.data;
+    for (let i = 0; i < d.length; i += 4) {
+      d[i + 3] = d[i]; // 輝度 -> アルファ
+      d[i] = 0; d[i + 1] = 0; d[i + 2] = 0;
+    }
+    tctx.putImageData(data, 0, 0);
+    mask._alphaCanvas = tmp;
+    return tmp;
+  };
+
+  // ドキュメント全体サイズのマスクを組み立てる。同一マスクが多数のレイヤーに
+  // 適用されるため、スケール・反転・サイズが同じ間はキャッシュを使い回す。
+  const getFullSizeMaskCanvas = (mask, scale, flip, canvasWidth, canvasHeight) => {
+    const cached = mask._fullCache;
+    if (cached && cached.scale === scale && cached.flip === flip &&
+      cached.width === canvasWidth && cached.height === canvasHeight) {
+      return cached.canvas;
+    }
+
+    const alphaMask = getMaskAlphaCanvas(mask);
     const maskTemp = document.createElement('canvas');
     maskTemp.width = canvasWidth;
     maskTemp.height = canvasHeight;
     const maskCtx = maskTemp.getContext('2d');
-
-    // defaultColor: 0=black(transparent outside), 255=white(visible outside)
-    // Fill the entire mask canvas with the defaultColor first
-    const defaultColor = mask.defaultColor ?? 0;
-    if (defaultColor >= 128) {
-      // White background: areas outside mask bounds are fully visible
-      maskCtx.fillStyle = '#ffffff';
-      maskCtx.fillRect(0, 0, canvasWidth, canvasHeight);
-    }
-    // If defaultColor is 0 (black), the canvas is already transparent (0,0,0,0)
-    // which means areas outside mask bounds will multiply to 0 (correct)
 
     maskCtx.save();
     if (flip) {
@@ -447,52 +472,90 @@ function App() {
     }
     const x = mask.left * scale;
     const y = mask.top * scale;
-    const w = mask.canvas.width * scale;
-    const h = mask.canvas.height * scale;
-    maskCtx.drawImage(mask.canvas, x, y, w, h);
+    const w = alphaMask.width * scale;
+    const h = alphaMask.height * scale;
+    maskCtx.drawImage(alphaMask, x, y, w, h);
+
+    // defaultColor: 0=black(マスク範囲外は非表示), 255=white(マスク範囲外は表示)
+    // 黒の場合はキャンバスが透明のまま＝非表示で正しいので、白の場合のみ範囲外を埋める
+    const defaultColor = mask.defaultColor ?? 0;
+    if (defaultColor >= 128) {
+      maskCtx.fillStyle = '#000000';
+      maskCtx.fillRect(0, 0, canvasWidth, y);                          // 上
+      maskCtx.fillRect(0, y + h, canvasWidth, canvasHeight - (y + h)); // 下
+      maskCtx.fillRect(0, y, x, h);                                    // 左
+      maskCtx.fillRect(x + w, y, canvasWidth - (x + w), h);            // 右
+    }
     maskCtx.restore();
 
-    const ctx = canvas.getContext('2d');
-    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const maskData = maskCtx.getImageData(0, 0, canvas.width, canvas.height);
+    mask._fullCache = { scale, flip, width: canvasWidth, height: canvasHeight, canvas: maskTemp };
+    return maskTemp;
+  };
 
-    const sData = imgData.data;
-    const mData = maskData.data;
-    const len = sData.length;
-    if (defaultColor >= 128) {
-      // White default: use red channel as mask value (drawn with fillRect white + drawImage grayscale)
-      for (let i = 0; i < len; i += 4) {
-        const maskVal = mData[i] / 255;
-        sData[i + 3] = Math.round(sData[i + 3] * maskVal);
-      }
-    } else {
-      // Black default: areas outside mask are transparent (alpha=0 in maskTemp)
-      // For drawn mask pixels: use red channel; for unfilled areas: alpha=0 means mask=0
-      for (let i = 0; i < len; i += 4) {
-        // If maskTemp alpha is 0 (unfilled area), maskVal = 0 (block)
-        // If maskTemp alpha > 0 (drawn area), use the red channel as grayscale
-        const maskAlpha = mData[i + 3];
-        const maskVal = maskAlpha > 0 ? mData[i] / 255 : 0;
-        sData[i + 3] = Math.round(sData[i + 3] * maskVal);
+  const applyMaskToCanvas = (canvas, mask, scale, flip, canvasWidth, canvasHeight) => {
+    const maskTemp = getFullSizeMaskCanvas(mask, scale, flip, canvasWidth, canvasHeight);
+    const ctx = canvas.getContext('2d');
+    // destination-in で アルファ = 元のアルファ × マスクのアルファ となる
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-in';
+    ctx.drawImage(maskTemp, 0, 0);
+    ctx.restore();
+  };
+
+  // 親グループの不透明度の積。グループ自体を描画する場合はrenderLayerContentで
+  // 適用されるため、レイヤーを単体で描画するときのみ使用する。
+  const getAncestorOpacity = (layer) => {
+    const ancestors = layer.ancestorNodes;
+    if (!ancestors || ancestors.length === 0) return 1;
+    return ancestors.reduce((acc, n) => acc * (n.opacity === undefined ? 1 : n.opacity), 1);
+  };
+
+  // レイヤーが最終的に下地へ合成されるときの合成モード。
+  // 親グループに合成モードが設定されている場合、そのグループの合成結果が
+  // 下地へ合成されるため、外側のグループの合成モードが優先される。
+  const getEffectiveBlendMode = (layer) => {
+    const ancestors = layer.ancestorNodes;
+    if (ancestors) {
+      // 外側→内側の順に見て、最初に見つかった「通常」「通過」以外のグループが優先
+      for (let k = 0; k < ancestors.length; k++) {
+        const bm = ancestors[k].blendMode;
+        if (bm && bm !== 'pass through' && bm !== 'normal') return bm;
       }
     }
-    ctx.putImageData(imgData, 0, 0);
+    return layer.blendMode;
+  };
+
+  const hasAncestorEffects = (layer) => {
+    const ancestors = layer.ancestorNodes;
+    if (!ancestors || ancestors.length === 0) return false;
+    const hasMaskOrOpacity = ancestors.some(n =>
+      (n.mask && n.mask.canvas && !n.mask.disabled) || (n.opacity !== undefined && n.opacity !== 1)
+    );
+    return hasMaskOrOpacity || getEffectiveBlendMode(layer) !== layer.blendMode;
+  };
+
+  // 親グループのレイヤーマスクと不透明度を適用する。
+  // グループ自体を描画する場合はrenderLayerContent内で処理されるため、
+  // レイヤーを単体で（親グループを経由せずに）描画するときのみ使用する。
+  const applyAncestorEffects = (canvas, layer, scale, flip, canvasWidth, canvasHeight) => {
+    const ancestors = layer.ancestorNodes;
+    if (!ancestors || ancestors.length === 0) return;
+    ancestors.forEach(n => {
+      if (n.mask && n.mask.canvas && !n.mask.disabled) {
+        applyMaskToCanvas(canvas, n.mask, scale, flip, canvasWidth, canvasHeight);
+      }
+    });
+    const opacity = getAncestorOpacity(layer);
+    if (opacity !== 1) applyOpacityToCanvas(canvas, opacity);
   };
 
   const applyClippingMask = (canvas, maskCanvas) => {
     const ctx = canvas.getContext('2d');
-    const maskCtx = maskCanvas.getContext('2d');
-    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const maskData = maskCtx.getImageData(0, 0, canvas.width, canvas.height);
-
-    const sData = imgData.data;
-    const mData = maskData.data;
-    const len = sData.length;
-    for (let i = 0; i < len; i += 4) {
-      const maskAlpha = mData[i + 3] / 255;
-      sData[i + 3] = Math.round(sData[i + 3] * maskAlpha);
-    }
-    ctx.putImageData(imgData, 0, 0);
+    // destination-in で アルファ = 元のアルファ × クリップ元のアルファ となる
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-in';
+    ctx.drawImage(maskCanvas, 0, 0);
+    ctx.restore();
   };
 
   const NATIVE_BLEND_MODES = {
@@ -668,7 +731,9 @@ function App() {
       tempCtx.drawImage(layer.canvas, x, y, w, h);
       tempCtx.restore();
     } else if (layer.children) {
-      drawLayers(layer.children, tempCtx, scale, flip, canvasWidth);
+      // 子レイヤーは親（このレイヤー）のマスクをこの後まとめて適用するため、
+      // 親マスクの再適用は行わない
+      drawLayers(layer.children, tempCtx, scale, flip, canvasWidth, false);
     }
 
     if (layer.mask && layer.mask.canvas && !layer.mask.disabled) {
@@ -682,7 +747,9 @@ function App() {
     return tempCanvas;
   };
 
-  const drawLayers = (layersList, ctx, scale = 1, flip = false, canvasWidth = 0) => {
+  // applyAncestors: 描画対象が親グループを経由せずに直接渡された場合はtrue。
+  // グループ内の子レイヤーを再帰描画する際はfalse（親マスクの二重適用を防ぐ）。
+  const drawLayers = (layersList, ctx, scale = 1, flip = false, canvasWidth = 0, applyAncestors = true) => {
     if (!layersList || layersList.length === 0) return;
     const canvasHeight = ctx.canvas.height;
     let i = 0;
@@ -704,24 +771,30 @@ function App() {
 
       // Render base layer
       let baseCanvas;
-      const isPassThroughGroup = baseLayer.children && 
-        (baseLayer.blendMode === 'pass through' || !baseLayer.blendMode) && 
-        (!baseLayer.mask || baseLayer.mask.disabled) && 
+      // 親グループのマスク・不透明度・合成モードを適用する必要がある場合は、
+      // 直接ctxへ描かずに一旦オフスクリーンへ描いてから適用する
+      const needsAncestorEffects = applyAncestors && hasAncestorEffects(baseLayer);
+      const isPassThroughGroup = baseLayer.children &&
+        (baseLayer.blendMode === 'pass through' || !baseLayer.blendMode) &&
+        (!baseLayer.mask || baseLayer.mask.disabled) &&
+        !needsAncestorEffects &&
         (baseLayer.opacity === undefined || baseLayer.opacity === 1);
 
       if (isPassThroughGroup) {
-        drawLayers(baseLayer.children, ctx, scale, flip, canvasWidth);
+        drawLayers(baseLayer.children, ctx, scale, flip, canvasWidth, false);
       }
 
       if (!isPassThroughGroup || clipLayers.length > 0) {
         baseCanvas = renderLayerContent(baseLayer, scale, flip, canvasWidth, canvasHeight);
-        blendCanvasOntoContext(baseCanvas, ctx, baseLayer.blendMode);
+        if (applyAncestors) applyAncestorEffects(baseCanvas, baseLayer, scale, flip, canvasWidth, canvasHeight);
+        blendCanvasOntoContext(baseCanvas, ctx, applyAncestors ? getEffectiveBlendMode(baseLayer) : baseLayer.blendMode);
 
         if (clipLayers.length > 0) {
           clipLayers.forEach(clipLayer => {
             const clipCanvas = renderLayerContent(clipLayer, scale, flip, canvasWidth, canvasHeight);
+            if (applyAncestors) applyAncestorEffects(clipCanvas, clipLayer, scale, flip, canvasWidth, canvasHeight);
             applyClippingMask(clipCanvas, baseCanvas);
-            blendCanvasOntoContext(clipCanvas, ctx, clipLayer.blendMode);
+            blendCanvasOntoContext(clipCanvas, ctx, applyAncestors ? getEffectiveBlendMode(clipLayer) : clipLayer.blendMode);
           });
         }
       }
@@ -850,9 +923,16 @@ function App() {
       return results;
     };
 
-    // Helper: check if a group of layers contains any non-normal blend mode
-    const hasNonNormalBlend = (layers) =>
-      layers.some(l => l && l.blendMode && l.blendMode !== 'normal');
+    // パーツ全体の合成モードは最背面（最初に描画される）レイヤーで判定する。
+    // 合成パーツ内の乗算レイヤーなどはパーツ内部の重ね合わせに使われるだけなので、
+    // それを理由にパーツ全体（本体画像を含む）を最前面へ移動させてはいけない。
+    // 親グループの合成モードは引き継いだ上で判定する。
+    const hasNonNormalBlend = (layers) => {
+      const baseLayer = layers.find(Boolean);
+      if (!baseLayer) return false;
+      const bm = getEffectiveBlendMode(baseLayer);
+      return !!bm && bm !== 'normal' && bm !== 'pass through';
+    };
 
     const normalDraws = [];
     const nonNormalDraws = [];
